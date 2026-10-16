@@ -888,7 +888,10 @@ synatlsmoc_exec_cmd (FpiDeviceSynaTlsMoc *self, gboolean raw, gboolean check_res
 static void
 synatlsmoc_set_print_data (FpPrint *print, Db2Id template_id, FpUserId fp_user_id, FingerId finger_id)
 {
-  g_autofree gchar *user_id_safe = g_strndup (fp_user_id, sizeof (FpUserId));
+  /* always sizeof (FpUserId) + 1 bytes, zero padded */
+  g_autofree gchar *user_id_safe = g_malloc0 (sizeof (FpUserId) + 1);
+
+  strncpy (user_id_safe, fp_user_id, sizeof (FpUserId));
 
   fpi_print_fill_from_user_id (print, user_id_safe);
   fpi_print_set_type (print, FPI_PRINT_RAW);
