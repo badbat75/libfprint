@@ -28,6 +28,7 @@
 
 #include <glib.h>
 #include <openssl/conf.h>
+#include <openssl/crypto.h>
 #include <openssl/core_names.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
@@ -407,7 +408,12 @@ tls_session_encrypt (TlsSession *self, guint8 type, guint8 *ptext, gsize ptext_s
 
         // Create random nonce & add it to output
         guint8 nonce[NONCE_SIZE];
-        RAND_bytes (nonce, NONCE_SIZE);
+        if (RAND_bytes (nonce, NONCE_SIZE) != 1)
+          {
+            g_propagate_error (error, fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
+                                                                "RAND_bytes failed"));
+            return FALSE;
+          }
 
         // encr_iv + nonce
         gcm_iv = g_malloc (self->encr_iv_len + NONCE_SIZE);
@@ -1397,7 +1403,7 @@ tls_session_receive_handshake (TlsSession *self, Handshake *msg, GError **error)
             return FALSE;
           }
 
-        if (memcmp (verify_data, server_verify_data, VERIFY_DATA_SIZE) != 0)
+        if (CRYPTO_memcmp (verify_data, server_verify_data, VERIFY_DATA_SIZE) != 0)
           {
             g_propagate_error (error, fpi_device_error_new_msg (
                                           FP_DEVICE_ERROR_PROTO,
@@ -1447,6 +1453,16 @@ tls_session_receive (TlsSession *self, TlsRecord *record, GError **error)
                         FP_DEVICE_ERROR_PROTO,
                         "Got invalid content of change cipher spec message: %d",
                         change_cipher_spec_val));
+                return FALSE;
+              }
+
+            if (self->handshake_phase != SERVER_DONE || self->decr_key == NULL ||
+                self->pending_cs != TLS_ECDH_ECDSA_WITH_AES_256_GCM_SHA384)
+              {
+                self->raised_alert_desc = SSL_AD_UNEXPECTED_MESSAGE;
+                g_propagate_error (error, fpi_device_error_new_msg (
+                                              FP_DEVICE_ERROR_PROTO,
+                                              "Unexpected ChangeCipherSpec (phase %d)", self->handshake_phase));
                 return FALSE;
               }
 
@@ -1539,6 +1555,15 @@ tls_session_receive (TlsSession *self, TlsRecord *record, GError **error)
           {
             gsize app_data_size;
             const guint8 *app_data = NULL;
+
+            if (!tls_session_is_established (self))
+              {
+                self->raised_alert_desc = SSL_AD_UNEXPECTED_MESSAGE;
+                g_propagate_error (error, fpi_device_error_new_msg (
+                                              FP_DEVICE_ERROR_PROTO,
+                                              "Application data received before TLS handshake finished"));
+                return FALSE;
+              }
 
             app_data_size = fpi_byte_reader_get_remaining (&reader);
             fpi_byte_reader_get_data (&reader, app_data_size, &app_data);
@@ -1667,6 +1692,13 @@ tls_session_establish (TlsSession *self, GError **error)
   fp_dbg ("Starting TLS handshake...");
 #endif
 
+  if (RAND_bytes (self->client_random, RANDOM_SIZE) != 1)
+    {
+      g_propagate_error (error, fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
+                                                          "RAND_bytes failed for client random"));
+      return FALSE;
+    }
+
   if (!tls_session_send_client_hello (self, &local_error))
     {
       g_propagate_error (error, local_error);
@@ -1699,8 +1731,6 @@ tls_session_new (const guint8 *client_cert, gsize client_cert_len,
   self->session_id = g_malloc0 (7);
 
   self->raised_alert_desc = TLS_NO_ALERT;
-
-  RAND_bytes (self->client_random, RANDOM_SIZE);
 
   self->version = TLS1_2_VERSION;
 
@@ -1764,10 +1794,26 @@ tls_session_send_application_data (TlsSession *self,
 }
 
 gboolean
+tls_session_is_established (TlsSession *self)
+{
+  return self != NULL &&
+         self->handshake_phase == FINISHED &&
+         self->client_cs == TLS_ECDH_ECDSA_WITH_AES_256_GCM_SHA384 &&
+         self->server_cs == TLS_ECDH_ECDSA_WITH_AES_256_GCM_SHA384 &&
+         self->encr_key != NULL && self->decr_key != NULL;
+}
+
+gboolean
 tls_session_wrap (TlsSession *self, guint8 *pdata, gsize pdata_size, guint8 **cdata, gsize *cdata_size, GError **error)
 {
   GError *local_error = NULL;
-  // g_assert(self->established);
+
+  if (!tls_session_is_established (self))
+    {
+      g_propagate_error (error, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                          "TLS session not established"));
+      return FALSE;
+    }
 
   // Send application data message
   if (!tls_session_send_application_data (self, pdata, pdata_size, &local_error))
@@ -1789,7 +1835,13 @@ gboolean
 tls_session_unwrap (TlsSession *self, guint8 *cdata, gsize cdata_size, guint8 **pdata, gsize *pdata_size, GError **error)
 {
   GError *local_error = NULL;
-  // g_assert(self->established);
+
+  if (!tls_session_is_established (self))
+    {
+      g_propagate_error (error, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                          "TLS session not established"));
+      return FALSE;
+    }
 
   // "Receive" data
   if (!tls_session_receive_ciphertext (self, cdata, cdata_size, &local_error))

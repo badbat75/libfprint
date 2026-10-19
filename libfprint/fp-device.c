@@ -876,7 +876,7 @@ fp_device_set_persistent_data (FpDevice *device,
       return FALSE;
     }
 
-  g_variant_get (stored, "(issv)", &version, &driver, &device_id, &loaded);
+  g_variant_get (stored, "(i&s&sv)", &version, &driver, &device_id, &loaded);
   if (version != 1)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
