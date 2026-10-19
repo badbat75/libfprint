@@ -1692,6 +1692,13 @@ tls_session_establish (TlsSession *self, GError **error)
   fp_dbg ("Starting TLS handshake...");
 #endif
 
+  if (RAND_bytes (self->client_random, RANDOM_SIZE) != 1)
+    {
+      g_propagate_error (error, fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
+                                                          "RAND_bytes failed for client random"));
+      return FALSE;
+    }
+
   if (!tls_session_send_client_hello (self, &local_error))
     {
       g_propagate_error (error, local_error);
@@ -1724,9 +1731,6 @@ tls_session_new (const guint8 *client_cert, gsize client_cert_len,
   self->session_id = g_malloc0 (7);
 
   self->raised_alert_desc = TLS_NO_ALERT;
-
-  if (RAND_bytes (self->client_random, RANDOM_SIZE) != 1)
-    g_critical ("RAND_bytes failed for client random");
 
   self->version = TLS1_2_VERSION;
 

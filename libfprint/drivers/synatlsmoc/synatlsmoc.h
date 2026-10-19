@@ -456,6 +456,7 @@ typedef struct
   gboolean tried_to_exit_bootloader_mode;
   gboolean tried_get_version_reset;
   guint force_close_attempts;
+  gboolean pairing_needs_save;
   EVP_PKEY *pub_key;
 } OpenData;
 
