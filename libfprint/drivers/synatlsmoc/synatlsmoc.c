@@ -41,7 +41,9 @@
 #include "fpi-ssm.h"
 #include "fpi-usb-transfer.h"
 #include "pairing.h"
+#ifdef USE_SAMPLE_PAIRING_DATA
 #include "sample_pairing_data.h"
+#endif
 #include "sensor_public_keys.h"
 #include "synatlsmoc.h"
 #include "tagval.h"
@@ -101,6 +103,8 @@ struct _FpiDeviceSynaTlsMoc
   guint32 event_recv;
   guint32 first_event;
   guint num_pending_events;
+  guint event_read_rounds;
+  gboolean pairing_needs_save;
   gboolean event_read_in_legacy_mode;
 
   gboolean capture_started;
@@ -1159,6 +1163,12 @@ recv_tls_data (FpDevice *device, guint8 *buffer_in, gsize length_in, GError *err
     {
       fpi_ssm_jump_to_state (self->task_ssm, OPEN_TLS_SEND_DATA);
     }
+  else if (!tls_session_is_established (self->session))
+    {
+      fpi_ssm_mark_failed (self->task_ssm,
+                           set_and_report_error (FP_DEVICE_ERROR_PROTO,
+                                                 "TLS handshake did not complete"));
+    }
   else
     {
       fpi_ssm_next_state (self->task_ssm);
@@ -1520,14 +1530,24 @@ recv_event_read (FpDevice *device, guint8 *buffer_in, gsize length_in, GError *e
       fp_dbg ("\tThere are %u events pending -> sending event read again",
               self->num_pending_events);
 #endif
+      if (++self->event_read_rounds > 64)
+        {
+          self->event_read_rounds = 0;
+          fpi_ssm_mark_failed (self->task_ssm,
+                               set_and_report_error (FP_DEVICE_ERROR_PROTO,
+                                                     "Sensor keeps reporting pending events"));
+          return;
+        }
       send_event_read (self);
     }
   else if (self->event_recv & self->event_mask)
     {
+      self->event_read_rounds = 0;
       fpi_ssm_next_state (self->task_ssm);
     }
   else
     {
+      self->event_read_rounds = 0;
       fpi_ssm_jump_to_state (self->task_ssm,
                              fpi_ssm_get_cur_state (self->task_ssm));
     }
@@ -3304,8 +3324,8 @@ write_dft (FpiDeviceSynaTlsMoc *self, const guint8 *data, const gsize data_size,
   fp_dbg ("DFT -> %s", data_str);
 #endif
 
-  /* Send data */
-  g_autoptr (FpiUsbTransfer) transfer = fpi_usb_transfer_new (FP_DEVICE (self));
+  /* Send data (ownership of the transfer passes to fpi_usb_transfer_submit) */
+  FpiUsbTransfer *transfer = fpi_usb_transfer_new (FP_DEVICE (self));
   fpi_usb_transfer_fill_control (transfer, G_USB_DEVICE_DIRECTION_HOST_TO_DEVICE,
                                  G_USB_DEVICE_REQUEST_TYPE_VENDOR,
                                  G_USB_DEVICE_RECIPIENT_DEVICE,
@@ -3558,6 +3578,7 @@ store_pairing_data (FpiDeviceSynaTlsMoc *self)
                                           server_cert_var, privkey_pem_var);
 
   g_object_set (FP_DEVICE (self), "fpi-persistent-data", pairing_data, NULL);
+  self->pairing_needs_save = FALSE;
 
 #ifdef DEBUG
   g_autofree char *client_cert_str =
@@ -3715,6 +3736,7 @@ pair (FpiDeviceSynaTlsMoc *self)
 
   g_clear_pointer (&self->pairing_data.client_key, EVP_PKEY_free);
   self->pairing_data.client_key = EVP_EC_gen ("prime256v1");
+  self->pairing_needs_save = TRUE;
 
   /* we create it already serialized, as we do not need it in struct form */
   GError *error = NULL;
@@ -3810,7 +3832,11 @@ synatlsmoc_open_run_state (FpiSsm *ssm, FpDevice *device)
       else if (self->session == NULL && self->server_established)
         {
           fp_warn ("Sensor is in TLS session but host is not");
-          fpi_ssm_next_state (ssm);
+          if (++open_ssm_data->force_close_attempts > 2)
+            fpi_ssm_mark_failed (ssm, set_and_report_error (FP_DEVICE_ERROR_PROTO,
+                                                            "Sensor refuses to close its TLS session"));
+          else
+            fpi_ssm_next_state (ssm);
         }
       else if (self->session != NULL && self->server_established)
         {
@@ -3876,7 +3902,11 @@ synatlsmoc_open_run_state (FpiSsm *ssm, FpDevice *device)
       }
     case OPEN_SAVE_PAIRING_DATA:
       {
-        store_pairing_data (self);
+        /* Only reached after certificate verification and a completed TLS handshake */
+        if (self->pairing_needs_save)
+          store_pairing_data (self);
+        else
+          fpi_ssm_next_state (ssm);
         break;
       }
     case OPEN_VERIFY_SENSOR_CERTIFICATE:

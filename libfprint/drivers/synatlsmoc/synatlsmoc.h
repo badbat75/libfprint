@@ -337,10 +337,10 @@ typedef enum
   OPEN_LOAD_SENSOR_KEY,
   OPEN_LOAD_PAIRING_DATA,
   OPEN_SEND_PAIR,
-  OPEN_SAVE_PAIRING_DATA,
   OPEN_VERIFY_SENSOR_CERTIFICATE,
   OPEN_TLS_ESTABLISH,
   OPEN_TLS_SEND_DATA,
+  OPEN_SAVE_PAIRING_DATA,
   OPEN_SET_EVENT_MASK,
   OPEN_NUM_STATES,
 } OpenState;
@@ -455,6 +455,7 @@ typedef struct
 {
   gboolean tried_to_exit_bootloader_mode;
   gboolean tried_get_version_reset;
+  guint force_close_attempts;
   EVP_PKEY *pub_key;
 } OpenData;
 

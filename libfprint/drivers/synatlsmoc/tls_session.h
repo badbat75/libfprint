@@ -45,6 +45,7 @@ void tls_session_free (TlsSession *self);
 gboolean tls_session_establish (TlsSession *self, GError **error);
 gboolean tls_session_flush_send_buffer (TlsSession *self, guint8 **data, gsize *size, GError **error);
 gboolean tls_session_has_data (TlsSession *self);
+gboolean tls_session_is_established (TlsSession *self);
 gboolean tls_session_receive_ciphertext (TlsSession *self, guint8 *data, gsize size, GError **error);
 gboolean tls_session_wrap (TlsSession *self, guint8 *pdata, gsize pdata_size, guint8 **cdata, gsize *cdata_size, GError **error);
 gboolean tls_session_unwrap (TlsSession *self, guint8 *cdata, gsize cdata_size, guint8 **pdata, gsize *pdata_size, GError **error);
