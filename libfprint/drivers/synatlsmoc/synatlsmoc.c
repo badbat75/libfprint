@@ -4319,6 +4319,7 @@ synatlsmoc_delete (FpDevice *device)
   if (!get_template_id_from_fp_print (print_to_delete,
                                       delete_ssm_data->template_id, &error))
     {
+      g_free (delete_ssm_data);
       fpi_device_delete_complete (device, error);
       return;
     }
